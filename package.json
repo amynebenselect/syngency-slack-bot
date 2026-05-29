@@ -1,0 +1,16 @@
+{
+  "name": "syngency-slack-bot",
+  "version": "1.0.0",
+  "description": "AI-powered Slack bot for Syngency app support at SELECT Management Group",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.17.0",
+    "@anthropic-ai/sdk": "^0.24.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
