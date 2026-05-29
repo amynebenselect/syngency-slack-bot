@@ -25,7 +25,7 @@ function isQuestion(text) {
 
 async function getChannelQAHistory(client, channelId) {
   try {
-    const result = await client.conversations.history({ channel: channelId, limit: 30 });
+    const result = await client.conversations.history({ channel: channelId, limit: 200 });
     return (result.messages || [])
       .filter(m => !m.bot_id && m.text && m.text.trim().length > 10)
       .slice(0, 20)
