@@ -11,7 +11,6 @@ const app = new App({
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const SYNGENCY_GUIDE = process.env.SYNGENCY_GUIDE || 'No guide loaded.';
-const FALLBACK_USER_ID = process.env.FALLBACK_USER_ID || '';
 
 const repliedMessages = new Set();
 
@@ -24,16 +23,11 @@ function isQuestion(text) {
 
 async function getChannelQAHistory(client, channelId) {
   try {
-    // Get main channel messages
     const result = await client.conversations.history({ channel: channelId, limit: 200 });
     const messages = result.messages || [];
-
     let qaContext = '';
-
     for (const msg of messages.slice(0, 50)) {
       if (msg.bot_id || !msg.text) continue;
-
-      // If message has replies, fetch the thread
       if (msg.reply_count && msg.reply_count > 0) {
         try {
           const thread = await client.conversations.replies({
@@ -45,18 +39,14 @@ async function getChannelQAHistory(client, channelId) {
             .filter(m => !m.bot_id && m.text)
             .map(m => m.text)
             .join('\n  → ');
-
           if (threadMessages) {
             qaContext += `Q: ${msg.text}\n  → ${threadMessages}\n\n`;
           }
-        } catch (e) {
-          // skip thread errors
-        }
+        } catch (e) {}
       } else {
         qaContext += `${msg.text}\n`;
       }
     }
-
     return qaContext;
   } catch (err) {
     console.error('Error fetching history:', err.message);
@@ -64,22 +54,40 @@ async function getChannelQAHistory(client, channelId) {
   }
 }
 
-async function getAIAnswer(question, channelHistory) {
+async function getThreadContext(client, channelId, threadTs) {
+  try {
+    const result = await client.conversations.replies({
+      channel: channelId,
+      ts: threadTs,
+      limit: 50,
+    });
+    return (result.messages || [])
+      .filter(m => m.text)
+      .map(m => (m.bot_id ? `[Bot]: ${m.text}` : `[Human]: ${m.text}`))
+      .join('\n');
+  } catch (err) {
+    return '';
+  }
+}
+
+async function getAIAnswer(question, channelHistory, threadContext) {
   const systemPrompt = `You are a helpful Slack bot assistant for SELECT Management Group, supporting the rollout of the Syngency talent management app.
 
-Answer questions based on the official guide and past Q&As from the channel (including thread replies where humans answered questions).
+Answer questions based on the official guide and past Q&As from the channel (including thread replies).
 
 Rules:
 - Be concise (2-5 sentences max)
 - Use bullet points for steps
-- If you're not confident, end your answer with: UNCERTAIN
+- If you truly don't know, say: "I don't have that info — try asking the team!"
 - Never make up features or steps not in the guide
 
 SYNGENCY GUIDE:
 ${SYNGENCY_GUIDE}
 
 RECENT CHANNEL Q&A (including thread answers):
-${channelHistory || 'None yet.'}`;
+${channelHistory || 'None yet.'}
+
+${threadContext ? `CURRENT THREAD CONTEXT:\n${threadContext}` : ''}`;
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-5',
@@ -90,12 +98,12 @@ ${channelHistory || 'None yet.'}`;
   return response.content[0].text;
 }
 
+// Listen to ALL messages including thread replies
 app.event('message', async ({ event, client }) => {
   console.log('Message received:', event.text);
 
   if (event.bot_id) return;
   if (event.subtype) return;
-  if (event.thread_ts && event.thread_ts !== event.ts) return;
 
   const text = event.text || '';
   if (!isQuestion(text)) return;
@@ -106,20 +114,28 @@ app.event('message', async ({ event, client }) => {
 
   console.log('Answering question:', text);
 
+  // Determine if this is a thread reply or a top-level message
+  const isThreadReply = event.thread_ts && event.thread_ts !== event.ts;
+  const replyThreadTs = event.thread_ts || event.ts;
+
   try {
     await client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'thinking_face' }).catch(() => {});
+    
     const history = await getChannelQAHistory(client, event.channel);
-    const answer = await getAIAnswer(text, history);
-    await client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'thinking_face' }).catch(() => {});
+    
+    // If in a thread, get thread context so bot understands the conversation
+    let threadContext = '';
+    if (isThreadReply) {
+      threadContext = await getThreadContext(client, event.channel, event.thread_ts);
+    }
 
-    const isUncertain = answer.includes('UNCERTAIN');
-    const cleanAnswer = answer.replace('UNCERTAIN', '').trim();
-    const fallbackTag = isUncertain && FALLBACK_USER_ID ? `\n\n<@${FALLBACK_USER_ID}> can you help clarify this one?` : '';
+    const answer = await getAIAnswer(text, history, threadContext);
+    await client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'thinking_face' }).catch(() => {});
 
     await client.chat.postMessage({
       channel: event.channel,
-      thread_ts: event.ts,
-      text: `👋 *Syngency Bot:*\n\n${cleanAnswer}${fallbackTag}`,
+      thread_ts: replyThreadTs,
+      text: `👋 *Syngency Bot:*\n\n${answer}`,
     });
     console.log('Reply sent!');
   } catch (err) {
