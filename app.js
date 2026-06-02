@@ -35,7 +35,6 @@ async function getChannelQAHistory(client, channelId) {
     }
     return qaContext;
   } catch (err) {
-    console.error('Error fetching history:', err.message);
     return '';
   }
 }
@@ -52,26 +51,28 @@ async function getThreadContext(client, channelId, threadTs) {
   }
 }
 
-async function shouldAnswer(question, channelHistory, threadContext) {
+async function classifyAndAnswer(question, channelHistory, threadContext) {
   const systemPrompt = `You are a classifier for a Syngency app support bot at SELECT Management Group.
 
-Given a message, decide:
-1. Is this a question or request for help that the bot should try to answer? 
-2. If yes, what is the answer based on the guide and context?
+Given a message, decide whether to answer it and provide the answer.
 
 Respond in this exact format:
 SHOULD_ANSWER: YES or NO
 ANSWER: (your answer here, or leave blank if NO)
 
-Rules for SHOULD_ANSWER:
-- YES if it's a question (has ?, starts with how/what/when/where/why/can/do/is/are/will/should/could/would)
-- YES if it's asking for help or clarification about Syngency
-- YES if it's a follow-up question in a thread about Syngency
-- NO if it's just a greeting, reaction, announcement, or clearly not a question
-- NO if it's already been answered in the thread context
+Rules for SHOULD_ANSWER NO (do NOT answer):
+- Message is directed at a specific person (contains @mention of a human)
+- Message is a casual conversation, greeting, or announcement
+- Message is clearly already answered in the thread context
+- Message is not about Syngency app usage
 
-If YES, answer concisely (2-5 sentences, use bullet points for steps).
-If you don't know the answer, say: "I don't have that info — try asking the team!"
+Rules for SHOULD_ANSWER YES:
+- It's a general question about how to use Syngency (no specific person tagged)
+- It's asked in a thread continuing a Syngency support conversation
+- It's asking for clarification about a Syngency feature or workflow
+
+If YES, answer concisely (2-5 sentences, bullet points for steps).
+If you don't know, say: "I don't have that info — try asking the team!"
 
 SYNGENCY GUIDE:
 ${SYNGENCY_GUIDE}
@@ -96,13 +97,19 @@ ${threadContext ? `CURRENT THREAD CONTEXT:\n${threadContext}` : ''}`;
 }
 
 app.event('message', async ({ event, client }) => {
-  console.log('Event received:', event.type, event.subtype, event.text?.substring(0, 50));
+  console.log('Event received:', event.subtype, event.text?.substring(0, 60));
 
   if (event.bot_id) return;
   if (event.subtype && event.subtype !== 'thread_broadcast') return;
 
   const text = event.text || '';
   if (!text.trim() || text.trim().length < 3) return;
+
+  // Skip if message is tagging a specific person
+  if (text.includes('<@')) {
+    console.log('Skipping — message tags a specific person');
+    return;
+  }
 
   const msgId = `${event.channel}-${event.ts}`;
   if (repliedMessages.has(msgId)) return;
@@ -118,8 +125,8 @@ app.event('message', async ({ event, client }) => {
       threadContext = await getThreadContext(client, event.channel, event.thread_ts);
     }
 
-    const { shouldAnswer, answer } = await shouldAnswer(text, history, threadContext);
-    
+    const { shouldAnswer, answer } = await classifyAndAnswer(text, history, threadContext);
+
     if (!shouldAnswer || !answer) {
       console.log('Decided not to answer:', text.substring(0, 50));
       return;
