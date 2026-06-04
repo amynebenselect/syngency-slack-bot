@@ -11,18 +11,21 @@ const app = new App({
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const SYNGENCY_GUIDE = process.env.SYNGENCY_GUIDE || 'No guide loaded.';
+const SYNGENCY_CHANNEL_ID = process.env.SYNGENCY_CHANNEL_ID || '';
+
 const repliedMessages = new Set();
 
-async function getChannelQAHistory(client, channelId) {
+async function getChannelQAHistory(client) {
+  if (!SYNGENCY_CHANNEL_ID) return '';
   try {
-    const result = await client.conversations.history({ channel: channelId, limit: 200 });
+    const result = await client.conversations.history({ channel: SYNGENCY_CHANNEL_ID, limit: 200 });
     const messages = result.messages || [];
     let qaContext = '';
     for (const msg of messages.slice(0, 50)) {
       if (msg.bot_id || !msg.text) continue;
       if (msg.reply_count && msg.reply_count > 0) {
         try {
-          const thread = await client.conversations.replies({ channel: channelId, ts: msg.ts, limit: 20 });
+          const thread = await client.conversations.replies({ channel: SYNGENCY_CHANNEL_ID, ts: msg.ts, limit: 20 });
           const threadMessages = (thread.messages || [])
             .filter(m => !m.bot_id && m.text)
             .map(m => m.text)
@@ -35,6 +38,7 @@ async function getChannelQAHistory(client, channelId) {
     }
     return qaContext;
   } catch (err) {
+    console.error('Error fetching channel history:', err.message);
     return '';
   }
 }
@@ -51,33 +55,26 @@ async function getThreadContext(client, channelId, threadTs) {
   }
 }
 
-async function classifyAndAnswer(question, channelHistory, threadContext) {
-  const systemPrompt = `You are a classifier for a Syngency app support bot at SELECT Management Group.
+async function classifyAndAnswer(question, channelHistory, threadContext, isDM) {
+  const systemPrompt = `You are a helpful Slack bot assistant for SELECT Management Group, supporting the rollout of the Syngency talent management app.
 
-Given a message, decide whether to answer it and provide the answer.
+Answer questions based on the official Syngency guide and past Q&As from the #syngency channel.
+
+Rules:
+- Be concise (2-5 sentences max), use bullet points for steps
+- If you don't know, say: "I don't have that info — try asking in #syngency or reach out to Brittany or Gregg!"
+- Never make up features or steps not in the guide
+${isDM ? '- This is a direct message — always try to answer, the person is asking you directly' : `- Do NOT answer if the message tags a specific person
+- Do NOT answer if it's casual chat, announcements, or not about Syngency`}
 
 Respond in this exact format:
 SHOULD_ANSWER: YES or NO
-ANSWER: (your answer here, or leave blank if NO)
-
-Rules for SHOULD_ANSWER NO (do NOT answer):
-- Message is directed at a specific person (contains @mention of a human)
-- Message is a casual conversation, greeting, or announcement
-- Message is clearly already answered in the thread context
-- Message is not about Syngency app usage
-
-Rules for SHOULD_ANSWER YES:
-- It's a general question about how to use Syngency (no specific person tagged)
-- It's asked in a thread continuing a Syngency support conversation
-- It's asking for clarification about a Syngency feature or workflow
-
-If YES, answer concisely (2-5 sentences, bullet points for steps).
-If you don't know, say: "I don't have that info — try asking the team!"
+ANSWER: (your answer here)
 
 SYNGENCY GUIDE:
 ${SYNGENCY_GUIDE}
 
-RECENT CHANNEL Q&A:
+RECENT #SYNGENCY CHANNEL Q&A:
 ${channelHistory || 'None yet.'}
 
 ${threadContext ? `CURRENT THREAD CONTEXT:\n${threadContext}` : ''}`;
@@ -96,18 +93,21 @@ ${threadContext ? `CURRENT THREAD CONTEXT:\n${threadContext}` : ''}`;
   return { shouldAnswer, answer };
 }
 
+// Handle ALL message events (channels, private groups, and DMs)
 app.event('message', async ({ event, client }) => {
-  console.log('Event received:', event.subtype, event.text?.substring(0, 60));
+  console.log('Event:', event.channel_type, event.subtype, event.text?.substring(0, 60));
 
   if (event.bot_id) return;
   if (event.subtype && event.subtype !== 'thread_broadcast') return;
 
   const text = event.text || '';
-  if (!text.trim() || text.trim().length < 3) return;
+  if (!text.trim() || text.trim().length < 2) return;
 
-  // Skip if message is tagging a specific person
-  if (text.includes('<@')) {
-    console.log('Skipping — message tags a specific person');
+  const isDM = event.channel_type === 'im';
+
+  // In channels, skip messages tagging specific people
+  if (!isDM && text.includes('<@')) {
+    console.log('Skipping — tags a specific person');
     return;
   }
 
@@ -119,26 +119,29 @@ app.event('message', async ({ event, client }) => {
   const replyThreadTs = event.thread_ts || event.ts;
 
   try {
-    const history = await getChannelQAHistory(client, event.channel);
+    const history = await getChannelQAHistory(client);
     let threadContext = '';
     if (isThreadReply) {
       threadContext = await getThreadContext(client, event.channel, event.thread_ts);
     }
 
-    const { shouldAnswer, answer } = await classifyAndAnswer(text, history, threadContext);
+    const { shouldAnswer, answer } = await classifyAndAnswer(text, history, threadContext, isDM);
 
     if (!shouldAnswer || !answer) {
-      console.log('Decided not to answer:', text.substring(0, 50));
+      console.log('Not answering:', text.substring(0, 50));
       return;
     }
 
     console.log('Answering:', text.substring(0, 50));
-    await client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'thinking_face' }).catch(() => {});
-    await client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'thinking_face' }).catch(() => {});
+
+    if (!isDM) {
+      await client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'thinking_face' }).catch(() => {});
+      await client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'thinking_face' }).catch(() => {});
+    }
 
     await client.chat.postMessage({
       channel: event.channel,
-      thread_ts: replyThreadTs,
+      thread_ts: isDM ? undefined : replyThreadTs,
       text: `👋 *Syngency Bot:*\n\n${answer}`,
     });
     console.log('Reply sent!');
