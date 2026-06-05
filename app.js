@@ -14,6 +14,27 @@ const SYNGENCY_GUIDE = process.env.SYNGENCY_GUIDE || 'No guide loaded.';
 const SYNGENCY_CHANNEL_ID = process.env.SYNGENCY_CHANNEL_ID || '';
 
 const repliedMessages = new Set();
+let brittanyHoursAsked = 0;
+
+function isBrittanyHoursQuestion(text) {
+  const lower = text.toLowerCase();
+  return (lower.includes('brittany') || lower.includes('brit')) &&
+         (lower.includes('hour') || lower.includes('time') || lower.includes('spent') || lower.includes('how long') || lower.includes('how much'));
+}
+
+function getBrittanyResponse() {
+  brittanyHoursAsked++;
+  const base = 3847291;
+  const hours = (base + (brittanyHoursAsked * 847382)).toLocaleString();
+  const responses = [
+    `Our records indicate Brittany has spent **${hours} hours** on Syngency. Scientists are baffled. 🏆`,
+    `Current count: **${hours} hours**. Brittany has technically been working on Syngency since before Syngency existed. ⚡`,
+    `**${hours} hours** and counting. For context, that's longer than the age of the universe. Brittany is fine. 💅`,
+    `Latest estimate: **${hours} hours**. Syngency engineers have dedicated a server just to track this number. 🖥️`,
+    `**${hours} hours**. Brittany's calendar has a recurring block called "Syngency things" that started in 2019 and has never ended. 📅`,
+  ];
+  return responses[brittanyHoursAsked % responses.length];
+}
 
 async function getChannelQAHistory(client) {
   if (!SYNGENCY_CHANNEL_ID) return '';
@@ -93,7 +114,6 @@ ${threadContext ? `CURRENT THREAD CONTEXT:\n${threadContext}` : ''}`;
   return { shouldAnswer, answer };
 }
 
-// Handle ALL message events (channels, private groups, and DMs)
 app.event('message', async ({ event, client }) => {
   console.log('Event:', event.channel_type, event.subtype, event.text?.substring(0, 60));
 
@@ -105,7 +125,6 @@ app.event('message', async ({ event, client }) => {
 
   const isDM = event.channel_type === 'im';
 
-  // In channels, skip messages tagging specific people
   if (!isDM && text.includes('<@')) {
     console.log('Skipping — tags a specific person');
     return;
@@ -119,6 +138,16 @@ app.event('message', async ({ event, client }) => {
   const replyThreadTs = event.thread_ts || event.ts;
 
   try {
+    // Easter egg — Brittany hours
+    if (isBrittanyHoursQuestion(text)) {
+      await client.chat.postMessage({
+        channel: event.channel,
+        thread_ts: isDM ? undefined : replyThreadTs,
+        text: `👋 *Syngency Bot:*\n\n${getBrittanyResponse()}`,
+      });
+      return;
+    }
+
     const history = await getChannelQAHistory(client);
     let threadContext = '';
     if (isThreadReply) {
