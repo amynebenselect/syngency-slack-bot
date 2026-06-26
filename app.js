@@ -13,6 +13,9 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const SYNGENCY_GUIDE = process.env.SYNGENCY_GUIDE || 'No guide loaded.';
 const SYNGENCY_CHANNEL_ID = process.env.SYNGENCY_CHANNEL_ID || '';
 
+// Brittany and Gregg's Slack user IDs — bot stays quiet when they're in a thread
+const EXPERT_USER_IDS = ['U011FEQAY13', 'UC3HGQ72N']; // Brittany Maxwell, Gregg
+
 const repliedMessages = new Set();
 let brittanyHoursAsked = 0;
 
@@ -27,11 +30,11 @@ function getBrittanyResponse() {
   const base = 3847291;
   const hours = (base + (brittanyHoursAsked * 847382)).toLocaleString();
   const responses = [
-    `Our records indicate Brittany has spent **${hours} hours** on Syngency. Scientists are baffled. 🏆`,
-    `Current count: **${hours} hours**. Brittany has technically been working on Syngency since before Syngency existed. ⚡`,
-    `**${hours} hours** and counting. For context, that's longer than the age of the universe. Brittany is fine. 💅`,
-    `Latest estimate: **${hours} hours**. Syngency engineers have dedicated a server just to track this number. 🖥️`,
-    `**${hours} hours**. Brittany's calendar has a recurring block called "Syngency things" that started in 2019 and has never ended. 📅`,
+    `Our records indicate Brittany has spent *${hours} hours* on Syngency. Scientists are baffled. 🏆`,
+    `Current count: *${hours} hours*. Brittany has technically been working on Syngency since before Syngency existed. ⚡`,
+    `*${hours} hours* and counting. For context, that's longer than the age of the universe. Brittany is fine. 💅`,
+    `Latest estimate: *${hours} hours*. Syngency engineers have dedicated a server just to track this number. 🖥️`,
+    `*${hours} hours*. Brittany's calendar has a recurring block called "Syngency things" that started in 2019 and has never ended. 📅`,
   ];
   return responses[brittanyHoursAsked % responses.length];
 }
@@ -67,13 +70,14 @@ async function getChannelQAHistory(client) {
 async function getThreadContext(client, channelId, threadTs) {
   try {
     const result = await client.conversations.replies({ channel: channelId, ts: threadTs, limit: 50 });
-    return (result.messages || [])
-      .filter(m => m.text)
-      .map(m => (m.bot_id ? `[Bot]: ${m.text}` : `[Human]: ${m.text}`))
-      .join('\n');
+    return result.messages || [];
   } catch (err) {
-    return '';
+    return [];
   }
+}
+
+async function expertIsInThread(threadMessages) {
+  return threadMessages.some(m => EXPERT_USER_IDS.includes(m.user));
 }
 
 async function classifyAndAnswer(question, channelHistory, threadContext, isDM) {
@@ -125,6 +129,7 @@ app.event('message', async ({ event, client }) => {
 
   const isDM = event.channel_type === 'im';
 
+  // Skip if message tags a specific person (in channels only)
   if (!isDM && text.includes('<@')) {
     console.log('Skipping — tags a specific person');
     return;
@@ -136,6 +141,15 @@ app.event('message', async ({ event, client }) => {
 
   const isThreadReply = event.thread_ts && event.thread_ts !== event.ts;
   const replyThreadTs = event.thread_ts || event.ts;
+
+  // If this is a thread, check if Brittany or Gregg are already in it
+  if (!isDM && isThreadReply) {
+    const threadMessages = await getThreadContext(client, event.channel, event.thread_ts);
+    if (await expertIsInThread(threadMessages)) {
+      console.log('Brittany or Gregg is in this thread — staying quiet and learning.');
+      return;
+    }
+  }
 
   try {
     // Easter egg — Brittany hours
@@ -149,12 +163,10 @@ app.event('message', async ({ event, client }) => {
     }
 
     const history = await getChannelQAHistory(client);
-    let threadContext = '';
-    if (isThreadReply) {
-      threadContext = await getThreadContext(client, event.channel, event.thread_ts);
-    }
+    const threadMessages = isThreadReply ? await getThreadContext(client, event.channel, event.thread_ts) : [];
+    const threadContextText = threadMessages.map(m => (m.bot_id ? `[Bot]: ${m.text}` : `[Human]: ${m.text}`)).join('\n');
 
-    const { shouldAnswer, answer } = await classifyAndAnswer(text, history, threadContext, isDM);
+    const { shouldAnswer, answer } = await classifyAndAnswer(text, history, threadContextText, isDM);
 
     if (!shouldAnswer || !answer) {
       console.log('Not answering:', text.substring(0, 50));
