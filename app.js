@@ -39,7 +39,7 @@ function getBrittanyResponse() {
 async function getChannelQAHistory(client) {
   if (!SYNGENCY_CHANNEL_ID) return '';
   try {
-    const result = await client.conversations.history({ channel: SYNGENCY_CHANNEL_ID, limit: 200 });
+    const result = await client.conversations.history({ channel: SYNGENCY_CHANNEL_ID, limit: 1000 });
     const messages = result.messages || [];
     let qaContext = '';
     for (const msg of messages.slice(0, 50)) {
